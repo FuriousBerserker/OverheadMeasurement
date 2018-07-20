@@ -1,12 +1,13 @@
 CC = clang
+CXX = clang++
 CFLAGS = -O0 -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda
-MARCOS =
+MACROS = -DOFFLOADING=1 -DMEASUREMENT=1 -DNTIMES=5
 
 FF = g77
 FFLAGS = -O0
 
 .PHONY: default
-default: stream_c.exe
+default: stream_cpp.exe
 
 all: stream_f.exe stream_c.exe
 
@@ -18,8 +19,11 @@ stream_f.exe: stream.f mysecond.o
 stream_c.exe: stream.c
 	$(CC) $(CFLAGS) $(MACROS) stream.c -o stream_c.exe
 
+stream_cpp.exe: stream.cpp
+	$(CXX) $(CFLAGS) $(MACROS) stream.cpp -o stream_cpp.exe
+
 clean:
-	rm -f stream_f.exe stream_c.exe *.o
+	rm -f stream_f.exe stream_c.exe stream_cpp.exe *.o
 
 # an example of a more complex build line for the Intel icc compiler
 stream.icc: stream.c
