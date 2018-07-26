@@ -1,7 +1,8 @@
 CC = clang
 CXX = clang++
-CFLAGS = -O0 -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda
-MACROS = -DOFFLOADING=1 -DMEASUREMENT=1 -DNTIMES=5
+CFLAGS = -O0 -g -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda
+CXXFLAGS = -O0 -g -std=c++11 -fopenmp -fopenmp-targets=nvptx64-nvidia-cuda
+MACROS ?= -DPARALLEL=1 -DOFFLOADING=1 -DSHADOW_MEMORY=1 -DEXECUTION_TIME=1 -DNTIMES=5
 
 FF = g77
 FFLAGS = -O0
@@ -17,10 +18,10 @@ stream_f.exe: stream.f mysecond.o
 	$(FF) $(FFLAGS) stream.o mysecond.o -o stream_f.exe
 
 stream_c.exe: stream.c
-	$(CC) $(CFLAGS) $(MACROS) stream.c -o stream_c.exe
+	$(CC) $(CFLAGS) $(MACROS) $? -o $@
 
 stream_cpp.exe: stream.cpp
-	$(CXX) $(CFLAGS) $(MACROS) stream.cpp -o stream_cpp.exe
+	$(CXX) $(CXXFLAGS) $(MACROS) $? -o $@
 
 clean:
 	rm -f stream_f.exe stream_c.exe stream_cpp.exe *.o

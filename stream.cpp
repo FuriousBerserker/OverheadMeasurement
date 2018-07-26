@@ -40,15 +40,15 @@
 /*     program constitutes acceptance of these licensing restrictions.   */
 /*  5. Absolutely no warranty is expressed or implied.                   */
 /*-----------------------------------------------------------------------*/
-#include <cfloat>
-#include <cstdint>
-#include <cstddef>
-#include <climits>
-#include <cmath>
-#include <cstdio>
-#include <sys/time.h>
-#include <cstdlib>
 #include <omp.h>
+#include <sys/time.h>
+#include <cfloat>
+#include <chrono>
+#include <climits>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 /*-----------------------------------------------------------------------
  * INSTRUCTIONS:
  *
@@ -194,7 +194,8 @@
 #define WINDOW_SIZE 4
 #endif
 
-//static long thread_limit_in_team = ((long)STREAM_ARRAY_SIZE / (long)TEAM_NUM) > 1024l ? 1024l : ((long)STREAM_ARRAY_SIZE / (long)TEAM_NUM);
+// static long thread_limit_in_team = ((long)STREAM_ARRAY_SIZE / (long)TEAM_NUM)
+// > 1024l ? 1024l : ((long)STREAM_ARRAY_SIZE / (long)TEAM_NUM);
 static long thread_limit_in_team = 512l;
 
 static STREAM_TYPE a[STREAM_ARRAY_SIZE + OFFSET], b[STREAM_ARRAY_SIZE + OFFSET],
@@ -222,38 +223,46 @@ extern void tuned_STREAM_Triad(STREAM_TYPE scalar);
 #ifdef _OPENMP
 extern int omp_get_num_threads();
 extern int omp_get_num_teams();
+
 extern int omp_get_team_num();
 #endif
 
-#if defined(OFFLOADING) && defined(MEASUREMENT)
+#if defined(OFFLOADING) && defined(SHADOW_MEMORY)
+#define EMPTY 0x0000000000000000
+
 class ShadowMemory {
- private:
+   private:
     static unsigned int offsetPatterns[4];
     unsigned long bits[WINDOW_SIZE];
     unsigned nextAvail;
- 
- public:
 
+   public:
     ShadowMemory() : nextAvail(0) {
         for (unsigned i = 0; i < WINDOW_SIZE; i++) {
-            bits[i] = 0x0000000000000000;
+            bits[i] = EMPTY;
         }
     }
-    friend void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID, bool isWrite, unsigned int size);
+    friend void insertSM(ShadowMemory *const s, ptrdiff_t address,
+                         unsigned int threadID, bool isWrite,
+                         unsigned int size);
     unsigned int getThreadID(unsigned index) {
         return (unsigned int)(this->bits[index] >> 48);
     }
 
-    unsigned long getClock(unsigned index) { 
+    unsigned long getClock(unsigned index) {
         return (this->bits[index] >> 6) & 0x000003FFFFFFFFFF;
     }
 
     bool isWrite(unsigned index) {
-        return (unsigned int)((this->bits[index] >> 5) & 0x0000000000000001) == 0x0000000000000001 ? true : false;
+        return (unsigned int)((this->bits[index] >> 5) & 0x0000000000000001) ==
+                       0x0000000000000001
+                   ? true
+                   : false;
     }
 
     unsigned int getAccessSize(unsigned index) {
-        unsigned long patternIndex = (this->bits[index] >> 3) & 0x0000000000000003;
+        unsigned long patternIndex =
+            (this->bits[index] >> 3) & 0x0000000000000003;
         return offsetPatterns[patternIndex];
     }
 
@@ -264,23 +273,28 @@ class ShadowMemory {
     void outputSM() {
         printf(HLINE);
         for (unsigned i = 0; i < WINDOW_SIZE; i++) {
-            printf("Thread ID = %d, Clock = %ld, Access mode = %s, Access size = %d, Offset = %d\n", getThreadID(i), getClock(i), isWrite(i) ? "write" : "read", getAccessSize(i), getAddressOffset(i));
+            printf(
+                "Thread ID = %d, Clock = %ld, Access mode = %s, Access size = "
+                "%d, Offset = %d\n",
+                getThreadID(i), getClock(i), isWrite(i) ? "write" : "read",
+                getAccessSize(i), getAddressOffset(i));
         }
         printf(HLINE);
     }
-
 };
 
 unsigned int ShadowMemory::offsetPatterns[] = {1, 2, 4, 8};
 
-unsigned int smSize = ((unsigned int)STREAM_ARRAY_SIZE * sizeof(STREAM_TYPE) + 7) / 8;
+unsigned int smSize =
+    ((unsigned int)STREAM_ARRAY_SIZE * sizeof(STREAM_TYPE) + 7) / 8;
 ShadowMemory *sa = new ShadowMemory[smSize];
 ShadowMemory *sb = new ShadowMemory[smSize];
 ShadowMemory *sc = new ShadowMemory[smSize];
 
-//omp_lock_t lock_sa, lock_sb, lock_sc;
+// omp_lock_t lock_sa, lock_sb, lock_sc;
 
-void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID, bool isWrite, unsigned int size) {
+void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
+              bool isWrite, unsigned int size) {
     unsigned int index = address / 8;
     unsigned int offset = address % 8;
     unsigned int clock = 0xC0DA;
@@ -300,19 +314,31 @@ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID, b
     bit |= encodedSize;
     bit <<= 3;
     bit |= (offset & 0x0000000000000007);
-    unsigned int nextAvail;
-
-    nextAvail = s[index].nextAvail;
-    s[index].bits[nextAvail] = bit;
-    nextAvail = (nextAvail + 1) % WINDOW_SIZE;
-    s[index].nextAvail = nextAvail;
-
+    //unsigned int nextAvail;
+//
+    //nextAvail = s[index].nextAvail;
+    //s[index].bits[nextAvail] = bit;
+    //nextAvail = (nextAvail + 1) % WINDOW_SIZE;
+    //s[index].nextAvail = nextAvail;
+    
+    unsigned nextIndex = WINDOW_SIZE;
+    for (unsigned i = 0; i < WINDOW_SIZE; i++) {
+       if (s[index].bits[i] == EMPTY && nextIndex == WINDOW_SIZE) {
+            nextIndex = i;
+       }
+    }
+    if(nextIndex == WINDOW_SIZE) {
+        nextIndex = address % WINDOW_SIZE;
+    }
+    s[index].bits[nextIndex] = bit;
 }
 #endif
 
 int checktick();
 
+#if defined(OFFLOADING) && defined(SHADOW_MEMORY)
 void checkShadowMemory();
+#endif
 
 int main() {
     int quantum;
@@ -321,17 +347,14 @@ int main() {
     ssize_t j;
     STREAM_TYPE scalar;
     double t, times[4][NTIMES];
-    
+
     if (sizeof(STREAM_TYPE) < 8) {
-        printf("Due to the limitation on GPU, we currently only support 64 bit STREAM_TYPE");
+        printf(
+            "Due to the limitation on GPU, we currently only support 64 bit "
+            "STREAM_TYPE");
         exit(1);
     }
 
-//#if defined(OFFLOADING) && defined(MEASUREMENT)
-    //omp_init_lock(&lock_sa);
-    //omp_init_lock(&lock_sb);
-    //omp_init_lock(&lock_sc);
-//#endif
     /* --- SETUP --- determine precision and check timing --- */
 
     printf(HLINE);
@@ -368,6 +391,10 @@ int main() {
     printf(
         " The *best* time for each kernel (excluding the first iteration)\n");
     printf(" will be used to compute the reported bandwidth.\n");
+
+//#ifdef PARALLEL
+    //omp_set_num_threads(8);
+//#endif
 
 #ifdef _OPENMP
     printf(HLINE);
@@ -421,7 +448,8 @@ int main() {
     for (j = 0; j < STREAM_ARRAY_SIZE; j++) a[j] = 2.0E0 * a[j];
     t = 1.0E6 * (mysecond() - t);
 
-    printf("Each test below will take on the order of %d microseconds.\n", (int)t);
+    printf("Each test below will take on the order of %d microseconds.\n",
+           (int)t);
     printf("   (= %d clock ticks)\n", (int)(t / quantum));
     printf("Increase the size of the arrays if this shows that\n");
     printf("you are not getting at least 20 clock ticks per test.\n");
@@ -433,150 +461,174 @@ int main() {
     printf("precision of your system timer.\n");
     printf(HLINE);
 
-    /*	--- MAIN LOOP --- repeat test cases NTIMES times --- */
-#if defined(OFFLOADING) && defined(MEASUREMENT)
-#pragma omp target enter data device(0) map(to: sa[0:STREAM_ARRAY_SIZE], sb[0:STREAM_ARRAY_SIZE], sc[0:STREAM_ARRAY_SIZE], a[0:STREAM_ARRAY_SIZE], b[0:STREAM_ARRAY_SIZE], c[0:STREAM_ARRAY_SIZE])
+/*	--- MAIN LOOP --- repeat test cases NTIMES times --- */
+
+#ifdef OFFLOADING
+#ifdef SHADOW_MEMORY
+#pragma omp target enter data device(0)                                  \
+    map(to : a[0 : STREAM_ARRAY_SIZE], b[0 : STREAM_ARRAY_SIZE],         \
+                                         c[0 : STREAM_ARRAY_SIZE],       \
+                                           sa[0 : STREAM_ARRAY_SIZE],    \
+                                              sb[0 : STREAM_ARRAY_SIZE], \
+                                                 sc[0 : STREAM_ARRAY_SIZE])
+#else
+#pragma omp target enter data device(0) map(to : a[0 : STREAM_ARRAY_SIZE],   \
+                                                   b[0 : STREAM_ARRAY_SIZE], \
+                                                     c[0 : STREAM_ARRAY_SIZE])
 #endif
+#endif
+
+#ifdef EXECUTION_TIME
+    auto start_time = std::chrono::high_resolution_clock::now();
+#endif
+
     scalar = 3.0;
     for (k = 0; k < NTIMES; k++) {
         times[0][k] = mysecond();
-//#ifdef OFFLOADING
-//#pragma omp target device(1) //{
-//#endif
 
 #ifdef TUNED
-            tuned_STREAM_Copy();
+        tuned_STREAM_Copy();
 #else
 
+#ifdef PARALLEL
+#ifdef OFFLOADING
 #pragma omp target device(0)
-#pragma omp teams distribute parallel for num_teams(TEAM_NUM) thread_limit(thread_limit_in_team)
-            for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
-                c[j] = a[j];
-                if (omp_get_team_num() == 0 && j == 0) {
-                    printf("Is on the initial device = %d\n", omp_is_initial_device());
-                    printf("team num = %d, thread_limit = %d\n", omp_get_num_teams(), omp_get_thread_limit());
-                }
-#ifdef MEASUREMENT
-                insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), false, sizeof(STREAM_TYPE));
-                insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), true, sizeof(STREAM_TYPE));
+#pragma omp teams distribute parallel for num_teams(TEAM_NUM) \
+    thread_limit(thread_limit_in_team) schedule(static, 1)
+#else
+#pragma omp parallel for
 #endif
-            }
+#endif
+        for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
+            c[j] = a[j];
+ //if (omp_get_team_num() == 0 && j == 0) {
+ //printf("Is on the initial device = %d\n", omp_is_initial_device());
+ //printf("team num = %d, thread_limit = %d\n", omp_get_num_teams(),
+ //omp_get_thread_limit());
+//}
+#ifdef SHADOW_MEMORY
+            insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
+                     sizeof(STREAM_TYPE));
+            insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), true,
+                     sizeof(STREAM_TYPE));
+#endif
+        }
+
 #endif
 
-//#ifdef OFFLOADING
-        //}
-//#endif
         times[0][k] = mysecond() - times[0][k];
 
         times[1][k] = mysecond();
 
-//#if defined(OFFLOADING) && defined(MEASUREMENT)
-        //#pragma omp target update device(1) from(sa[0:STREAM_ARRAY_SIZE], sb[0:STREAM_ARRAY_SIZE], sc[0:STREAM_ARRAY_SIZE])
-        //printf("sa = %d, sb = %d, sc = %d\n", sa[0].history[0], sb[0].history[0], sc[0].history[0]);
-//#endif
-
-#ifdef OFFLOADING
-#pragma omp target device(0) 
-        {
-#endif
-
 #ifdef TUNED
-            tuned_STREAM_Scale(scalar);
+        tuned_STREAM_Scale(scalar);
 #else
 
-#pragma omp teams num_teams(TEAM_NUM) thread_limit(thread_limit_in_team)
-#pragma omp distribute parallel for
-            for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
-                b[j] = scalar * c[j];
-            
-#ifdef MEASUREMENT
-                insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), true, sizeof(STREAM_TYPE));
-                insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), false, sizeof(STREAM_TYPE));
-#endif
-            }
-#endif
-
+#ifdef PARALLEL
 #ifdef OFFLOADING
+#pragma omp target device(0)
+#pragma omp teams distribute parallel for num_teams(TEAM_NUM) \
+    thread_limit(thread_limit_in_team) schedule(static, 1)
+#else
+#pragma omp parallel for
+#endif
+#endif
+        for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
+            b[j] = scalar * c[j];
+
+#ifdef SHADOW_MEMORY
+            insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), true,
+                     sizeof(STREAM_TYPE));
+            insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
+                     sizeof(STREAM_TYPE));
+#endif
         }
 #endif
+
         times[1][k] = mysecond() - times[1][k];
 
         times[2][k] = mysecond();
 
-//#if defined(OFFLOADING) && defined(MEASUREMENT)
-        //#pragma omp target update device(1) from(sa[0:STREAM_ARRAY_SIZE], sb[0:STREAM_ARRAY_SIZE], sc[0:STREAM_ARRAY_SIZE])
-        //printf("sa = %d, sb = %d, sc = %d\n", sa[0].history[0], sb[0].history[0], sc[0].history[0]);
-//#endif
-
-#ifdef OFFLOADING
-#pragma omp target device(0)
-        {
-#endif
-
 #ifdef TUNED
-            tuned_STREAM_Add();
+        tuned_STREAM_Add();
 #else
 
-#pragma omp teams num_teams(TEAM_NUM) thread_limit(thread_limit_in_team)
-#pragma omp distribute parallel for
-            for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
-                c[j] = a[j] + b[j];
-            
-#ifdef MEASUREMENT
-                insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), false, sizeof(STREAM_TYPE));
-                insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), false, sizeof(STREAM_TYPE));
-                insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), true, sizeof(STREAM_TYPE));
-#endif
-            }
-#endif
-
+#ifdef PARALLEL
 #ifdef OFFLOADING
+#pragma omp target device(0)
+#pragma omp teams distribute parallel for num_teams(TEAM_NUM) \
+    thread_limit(thread_limit_in_team) schedule(static, 1)
+#else
+#pragma omp parallel for
+#endif
+#endif
+        for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
+            c[j] = a[j] + b[j];
+
+#ifdef SHADOW_MEMORY
+            insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
+                     sizeof(STREAM_TYPE));
+            insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
+                     sizeof(STREAM_TYPE));
+            insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), true,
+                     sizeof(STREAM_TYPE));
+#endif
         }
 #endif
+
         times[2][k] = mysecond() - times[2][k];
 
         times[3][k] = mysecond();
 
-//#if defined(OFFLOADING) && defined(MEASUREMENT)
-        //#pragma omp target update device(1) from(sa[0:STREAM_ARRAY_SIZE], sb[0:STREAM_ARRAY_SIZE], sc[0:STREAM_ARRAY_SIZE])
-        //printf("sa = %d, sb = %d, sc = %d\n", sa[0].history[0], sb[0].history[0], sc[0].history[0]);
-//#endif
-
-#ifdef OFFLOADING
-#pragma omp target device(0) 
-        {
-#endif
-
 #ifdef TUNED
-            tuned_STREAM_Triad(scalar);
+        tuned_STREAM_Triad(scalar);
 #else
 
-#pragma omp teams num_teams(TEAM_NUM) thread_limit(thread_limit_in_team)
-#pragma omp distribute parallel for
-            for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
-                a[j] = b[j] + scalar * c[j];
-
-#ifdef MEASUREMENT
-                insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), true, sizeof(STREAM_TYPE));
-                insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), false, sizeof(STREAM_TYPE));
-                insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), false, sizeof(STREAM_TYPE));
+#ifdef PARALLEL
+#ifdef OFFLOADING
+#pragma omp target device(0)
+#pragma omp teams distribute parallel for num_teams(TEAM_NUM) \
+    thread_limit(thread_limit_in_team) schedule(static, 1)
+#else
+#pragma omp parallel for
 #endif
-            
-            }
+#endif
+        for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
+            a[j] = b[j] + scalar * c[j];
+
+#ifdef SHADOW_MEMORY
+            insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), true,
+                     sizeof(STREAM_TYPE));
+            insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
+                     sizeof(STREAM_TYPE));
+            insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
+                     sizeof(STREAM_TYPE));
+#endif
+        }
+#endif
+
+        times[3][k] = mysecond() - times[3][k];
+    }
+
+#ifdef EXECUTION_TIME
+    auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed_time = end_time - start_time;
+    printf("overall execution time = %f seconds\n", elapsed_time.count());
 #endif
 
 #ifdef OFFLOADING
-        }
+#ifdef SHADOW_MEMORY
+#pragma omp target exit data device(0)                                     \
+    map(from : a[0 : STREAM_ARRAY_SIZE], b[0 : STREAM_ARRAY_SIZE],         \
+                                           c[0 : STREAM_ARRAY_SIZE],       \
+                                             sa[0 : STREAM_ARRAY_SIZE],    \
+                                                sb[0 : STREAM_ARRAY_SIZE], \
+                                                   sc[0 : STREAM_ARRAY_SIZE])
+#else
+#pragma omp target exit data device(0)                             \
+    map(from : a[0 : STREAM_ARRAY_SIZE], b[0 : STREAM_ARRAY_SIZE], \
+                                           c[0 : STREAM_ARRAY_SIZE])
 #endif
-        times[3][k] = mysecond() - times[3][k];
-
-//#if defined(OFFLOADING) && defined(MEASUREMENT)
-        //#pragma omp target update device(1) from(sa[0:STREAM_ARRAY_SIZE], sb[0:STREAM_ARRAY_SIZE], sc[0:STREAM_ARRAY_SIZE])
-        //printf("sa = %d, sb = %d, sc = %d\n", sa[0].history[0], sb[0].history[0], sc[0].history[0]);
-//#endif
-    }
-#if defined(OFFLOADING) && defined(MEASUREMENT)
-    #pragma omp target exit data device(0) map(from: sa[0:STREAM_ARRAY_SIZE], sb[0:STREAM_ARRAY_SIZE], sc[0:STREAM_ARRAY_SIZE], a[0:STREAM_ARRAY_SIZE], b[0:STREAM_ARRAY_SIZE], c[0:STREAM_ARRAY_SIZE])
 #endif
 
     /*	--- SUMMARY --- */
@@ -603,9 +655,10 @@ int main() {
     /* --- Check Results --- */
     checkSTREAMresults();
     printf(HLINE);
-   
 
+#if defined(OFFLOADING) && defined(SHADOW_MEMORY)
     checkShadowMemory();
+#endif
     return 0;
 }
 
@@ -653,12 +706,12 @@ double mysecond() {
     return ((double)tp.tv_sec + (double)tp.tv_usec * 1.e-6);
 }
 
-//long getTime() {
-    //struct timeval tp;
-    //struct timezone tzp;
-    //int i;
-    //i = gettimeofday(&tp, &tzp);
-    //return ((long)tp.tv_sec * 1000000 + (long)tp.tv_usec);
+// long getTime() {
+// struct timeval tp;
+// struct timezone tzp;
+// int i;
+// i = gettimeofday(&tp, &tzp);
+// return ((long)tp.tv_sec * 1000000 + (long)tp.tv_usec);
 //}
 
 #ifndef abs
@@ -695,7 +748,8 @@ void checkSTREAMresults() {
         aSumErr += abs(a[j] - aj);
         bSumErr += abs(b[j] - bj);
         cSumErr += abs(c[j] - cj);
-        // if (j == 417) printf("Index 417: c[j]: %f, cj: %f\n",c[j],cj);	//
+        // if (j == 417) printf("Index 417: c[j]: %f, cj: %f\n",c[j],cj);
+        // //
         // MCCALPIN
     }
     aAvgErr = aSumErr / (STREAM_TYPE)STREAM_ARRAY_SIZE;
@@ -714,8 +768,10 @@ void checkSTREAMresults() {
     err = 0;
     if (abs(aAvgErr / aj) > epsilon) {
         err++;
-        printf("Failed Validation on array a[], AvgRelAbsErr > epsilon (%e)\n",
-               epsilon);
+        printf(
+            "Failed Vac++ multilinelidation on array a[], AvgRelAbsErr > "
+            "epsilon (%e)\n",
+            epsilon);
         printf("     Expected Value: %e, AvgAbsErr: %e, AvgRelAbsErr: %e\n", aj,
                aAvgErr, abs(aAvgErr) / aj);
         ierr = 0;
@@ -794,13 +850,14 @@ void checkSTREAMresults() {
 #endif
 }
 
+#if defined(OFFLOADING) && defined(SHADOW_MEMORY)
 void checkShadowMemory() {
     printf(HLINE);
     unsigned limit = 5;
     unsigned stripe = STREAM_ARRAY_SIZE / limit;
     printf("sa:\n");
     for (unsigned i = 0; i < STREAM_ARRAY_SIZE; i += stripe) {
-       sa[i].outputSM(); 
+        sa[i].outputSM();
     }
     printf("sb:\n");
     for (unsigned i = 0; i < STREAM_ARRAY_SIZE; i += stripe) {
@@ -812,6 +869,7 @@ void checkShadowMemory() {
     }
     printf(HLINE);
 }
+#endif
 
 #ifdef TUNED
 /* stubs for "tuned" versions of the kernels */

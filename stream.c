@@ -42,7 +42,6 @@
 /*-----------------------------------------------------------------------*/
 # include <stdio.h>
 # include <unistd.h>
-# include <math.h>
 # include <float.h>
 # include <limits.h>
 # include <sys/time.h>
@@ -307,24 +306,16 @@ main()
     for (k=0; k<NTIMES; k++)
 	{
 	times[0][k] = mysecond();
-
-#pragma omp target device(0)
-{
 #ifdef TUNED
         tuned_STREAM_Copy();
 #else
-
 #pragma omp parallel for
 	for (j=0; j<STREAM_ARRAY_SIZE; j++)
 	    c[j] = a[j];
 #endif
-}
 	times[0][k] = mysecond() - times[0][k];
 	
 	times[1][k] = mysecond();
-
-#pragma omp target device(0)
-{
 #ifdef TUNED
         tuned_STREAM_Scale(scalar);
 #else
@@ -332,13 +323,9 @@ main()
 	for (j=0; j<STREAM_ARRAY_SIZE; j++)
 	    b[j] = scalar*c[j];
 #endif
-}
 	times[1][k] = mysecond() - times[1][k];
 	
 	times[2][k] = mysecond();
-
-#pragma omp target device(0)
-{
 #ifdef TUNED
         tuned_STREAM_Add();
 #else
@@ -346,13 +333,9 @@ main()
 	for (j=0; j<STREAM_ARRAY_SIZE; j++)
 	    c[j] = a[j]+b[j];
 #endif
-}
 	times[2][k] = mysecond() - times[2][k];
 	
 	times[3][k] = mysecond();
-
-#pragma omp target device(0)
-{
 #ifdef TUNED
         tuned_STREAM_Triad(scalar);
 #else
@@ -360,7 +343,6 @@ main()
 	for (j=0; j<STREAM_ARRAY_SIZE; j++)
 	    a[j] = b[j]+scalar*c[j];
 #endif
-}
 	times[3][k] = mysecond() - times[3][k];
 	}
 

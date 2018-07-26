@@ -50,8 +50,10 @@ flags = [
 '/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/../lib/c++/v1',
 '-isystem',
 '/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include',
+'-DPARALLEL=1',
 '-DOFFLOADING=1',
-'-DMEASUREMENT=1',
+'-DSHADOW_MEMORY=1',
+'-DEXECUTION_TIME=1',
 ]
 
 
