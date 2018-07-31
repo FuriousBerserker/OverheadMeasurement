@@ -40,7 +40,6 @@
 /*     program constitutes acceptance of these licensing restrictions.   */
 /*  5. Absolutely no warranty is expressed or implied.                   */
 /*-----------------------------------------------------------------------*/
-#include <omp.h>
 #include <sys/time.h>
 #include <cfloat>
 #include <chrono>
@@ -201,6 +200,16 @@
 #ifndef DEVICE_ID
 #define DEVICE_ID 0
 #endif
+
+#define cudaErrorCheck(call)                                                              \
+do{                                                                                       \
+    cudaError_t cuErr = call;                                                             \
+    if(cudaSuccess != cuErr){                                                             \
+      printf("CUDA Error - %s:%d: '%s'\n", __FILE__, __LINE__, cudaGetErrorString(cuErr));\
+      exit(0);                                                                            \
+    }                                                                                     \
+}while(0)
+
 // static long thread_limit_in_team = ((long)STREAM_ARRAY_SIZE / (long)TEAM_NUM)
 // > 1024l ? 1024l : ((long)STREAM_ARRAY_SIZE / (long)TEAM_NUM);
 
@@ -220,20 +229,8 @@ static double bytes[4] = {2 * sizeof(STREAM_TYPE) * STREAM_ARRAY_SIZE,
 
 extern double mysecond();
 extern void checkSTREAMresults();
-#ifdef TUNED
-extern void tuned_STREAM_Copy();
-extern void tuned_STREAM_Scale(STREAM_TYPE scalar);
-extern void tuned_STREAM_Add();
-extern void tuned_STREAM_Triad(STREAM_TYPE scalar);
-#endif
-#ifdef _OPENMP
-extern int omp_get_num_threads();
-extern int omp_get_num_teams();
 
-extern int omp_get_team_num();
-#endif
-
-#if defined(OFFLOADING) && defined(SHADOW_MEMORY)
+#ifdef SHADOW_MEMORY
 #define EMPTY 0x0000000000000000
 
 class ShadowMemory {
@@ -248,7 +245,7 @@ class ShadowMemory {
             bits[i] = EMPTY;
         }
     }
-    friend void insertSM(ShadowMemory *const s, ptrdiff_t address,
+    friend __device__ void insertSM(ShadowMemory *const s, ptrdiff_t address,
                          unsigned int threadID, bool isWrite,
                          unsigned int size);
     unsigned int getThreadID(unsigned index) {
@@ -299,7 +296,7 @@ ShadowMemory *sc = new ShadowMemory[smSize];
 
 // omp_lock_t lock_sa, lock_sb, lock_sc;
 
-void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
+__device__ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
               bool isWrite, unsigned int size) {
     unsigned int index = address / 8;
     unsigned int offset = address % 8;
@@ -347,16 +344,139 @@ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
 
 int checktick();
 
-#if defined(OFFLOADING) && defined(SHADOW_MEMORY)
+#ifdef SHADOW_MEMORY
 void checkShadowMemory();
 #endif
+
+STREAM_TYPE scalar = 3.0;
+
+#ifdef SHADOW_MEMORY
+__global__ void stream_copy(STREAM_TYPE* dst, STREAM_TYPE* src, ShadowMemory* dstSM, ShadowMemory* srcSM, unsigned size) {
+#else
+__global__ void stream_copy(STREAM_TYPE* dst, STREAM_TYPE* src, unsigned size) {
+#endif
+    unsigned chunk = size / gridDim.x;
+    unsigned remain = size % gridDim.x;
+    unsigned start = chunk * blockIdx.x; 
+    unsigned end = start + chunk;
+    if (blockIdx.x < remain) {
+        start += blockIdx.x;
+        end = start + chunk + 1;
+    }
+    unsigned index = start + threadIdx.x;
+    while (index < end) {
+        dst[index] = src[index];
+#ifdef SHADOW_MEMORY
+        unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+        insertSM(srcSM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
+        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true, sizeof(STREAM_TYPE));
+#endif
+        index += blockDim.x;
+    }
+    //unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+    //while(tid < size) {
+        //dst[tid] = src[tid];
+        //tid += gridDim.x * blockDim.x;
+    //}
+}
+
+#ifdef SHADOW_MEMORY
+__global__ void stream_scale(STREAM_TYPE* dst, STREAM_TYPE* src, ShadowMemory* dstSM, ShadowMemory* srcSM, STREAM_TYPE scalar, unsigned size) {
+#else
+__global__ void stream_scale(STREAM_TYPE* dst, STREAM_TYPE* src, STREAM_TYPE scalar, unsigned size) {
+#endif
+    unsigned chunk = size / gridDim.x;
+    unsigned remain = size % gridDim.x;
+    unsigned start = chunk * blockIdx.x; 
+    unsigned end = start + chunk;
+    if (blockIdx.x < remain) {
+        start += blockIdx.x;
+        end = start + chunk + 1;
+    }
+    unsigned index = start + threadIdx.x;
+    while (index < end) {
+        dst[index] = scalar * src[index];
+#ifdef SHADOW_MEMORY
+        unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+        insertSM(srcSM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE)); 
+        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true, sizeof(STREAM_TYPE));
+#endif
+        index += blockDim.x;
+    }
+    //unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+    //while (tid < size) {
+        //dst[tid] = scalar * src[tid];
+        //tid += gridDim.x * blockDim.x;
+    //}
+}
+
+#ifdef SHADOW_MEMORY
+__global__ void stream_add(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2, ShadowMemory* dstSM, ShadowMemory* op1SM, ShadowMemory* op2SM, unsigned size) {
+#else
+__global__ void stream_add(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2, unsigned size) {
+#endif
+    unsigned chunk = size / gridDim.x;
+    unsigned remain = size % gridDim.x;
+    unsigned start = chunk * blockIdx.x; 
+    unsigned end = start + chunk;
+    if (blockIdx.x < remain) {
+        start += blockIdx.x;
+        end = start + chunk + 1;
+    }
+    unsigned index = start + threadIdx.x;
+    while (index < end) {
+        dst[index] = op1[index] + op2[index];
+#ifdef SHADOW_MEMORY
+        unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+        insertSM(op1SM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
+        insertSM(op2SM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
+        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true, sizeof(STREAM_TYPE));
+#endif
+        index += blockDim.x;
+    }
+    //unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+    //while (tid < size) {
+        //dst[tid] = op1[tid] + op2[tid];
+        //tid += gridDim.x * blockDim.x;
+    //}
+}
+
+#ifdef SHADOW_MEMORY
+__global__ void stream_triad(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2, ShadowMemory* dstSM, ShadowMemory* op1SM, ShadowMemory* op2SM, STREAM_TYPE scalar, unsigned size) {
+#else
+__global__ void stream_triad(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2, STREAM_TYPE scalar, unsigned size) {
+#endif
+    unsigned chunk = size / gridDim.x;
+    unsigned remain = size % gridDim.x;
+    unsigned start = chunk * blockIdx.x; 
+    unsigned end = start + chunk;
+    if (blockIdx.x < remain) {
+        start += blockIdx.x;
+        end = start + chunk + 1;
+    }
+    unsigned index = start + threadIdx.x;
+    while (index < end) {
+        dst[index] = op1[index] + scalar * op2[index];
+#ifdef SHADOW_MEMORY
+        unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+        insertSM(op1SM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
+        insertSM(op2SM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
+        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true, sizeof(STREAM_TYPE));
+#endif
+        index += blockDim.x;
+    }
+    //unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+    //while (tid < size) {
+        //dst[tid] = op1[tid] + scalar * op2[tid];
+        //tid += gridDim.x * blockDim.x;
+    //}
+}
 
 int main() {
     int quantum;
     int BytesPerWord;
     int k;
     ssize_t j;
-    STREAM_TYPE scalar;
     double t, times[4][NTIMES];
 
     if (sizeof(STREAM_TYPE) < 8) {
@@ -403,42 +523,16 @@ int main() {
         " The *best* time for each kernel (excluding the first iteration)\n");
     printf(" will be used to compute the reported bandwidth.\n");
 
-//#ifdef PARALLEL
-    //omp_set_num_threads(8);
-//#endif
-
-#ifdef _OPENMP
-    printf(HLINE);
-#pragma omp parallel
-    {
-#pragma omp master
-        {
-            k = omp_get_num_threads();
-            printf("Number of Threads requested = %i\n", k);
-        }
-    }
-#endif
-
-#ifdef _OPENMP
-    k = 0;
-#pragma omp parallel
-#pragma omp atomic
-    k++;
-    printf("Number of Threads counted = %i\n", k);
-#endif
-
-#ifdef OFFLOADING
-    int device_num = omp_get_num_devices();
+    int device_num;
+    cudaErrorCheck(cudaGetDeviceCount(&device_num));
     printf("Number of Device = %d\n", device_num);
-    printf("Host ID = %d\n", omp_get_initial_device());
     if (DEVICE_ID >= device_num) {
         printf("Invalid device index, vaild index range is 0 - %d.\n", device_num - 1);
         exit(-1);
     }
-#endif
+    cudaErrorCheck(cudaSetDevice(DEVICE_ID));
 
 /* Get initial value for system clock. */
-#pragma omp parallel for
     for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
         a[j] = 1.0;
         b[j] = 2.0;
@@ -460,7 +554,6 @@ int main() {
     }
 
     t = mysecond();
-#pragma omp parallel for
     for (j = 0; j < STREAM_ARRAY_SIZE; j++) a[j] = 2.0E0 * a[j];
     t = 1.0E6 * (mysecond() - t);
 
@@ -478,151 +571,69 @@ int main() {
     printf(HLINE);
 
 /*	--- MAIN LOOP --- repeat test cases NTIMES times --- */
-
-#ifdef OFFLOADING
+    
+    STREAM_TYPE *da, *db, *dc;
+    unsigned size_in_byte = sizeof(STREAM_TYPE) * STREAM_ARRAY_SIZE;
+    cudaErrorCheck(cudaMalloc(&da, size_in_byte));
+    cudaErrorCheck(cudaMalloc(&db, size_in_byte));
+    cudaErrorCheck(cudaMalloc(&dc, size_in_byte));
+    cudaErrorCheck(cudaMemcpy(da, a, size_in_byte, cudaMemcpyHostToDevice));
+    cudaErrorCheck(cudaMemcpy(db, b, size_in_byte, cudaMemcpyHostToDevice));
+    cudaErrorCheck(cudaMemcpy(dc, c, size_in_byte, cudaMemcpyHostToDevice));
 #ifdef SHADOW_MEMORY
-#pragma omp target enter data device(DEVICE_ID)                                  \
-    map(to : a[0 : STREAM_ARRAY_SIZE], b[0 : STREAM_ARRAY_SIZE],         \
-                                         c[0 : STREAM_ARRAY_SIZE],       \
-                                           sa[0 : STREAM_ARRAY_SIZE],    \
-                                              sb[0 : STREAM_ARRAY_SIZE], \
-                                                 sc[0 : STREAM_ARRAY_SIZE])
-#else
-#pragma omp target enter data device(DEVICE_ID) map(to : a[0 : STREAM_ARRAY_SIZE],   \
-                                                   b[0 : STREAM_ARRAY_SIZE], \
-                                                     c[0 : STREAM_ARRAY_SIZE])
-#endif
+    ShadowMemory *dsa, *dsb, *dsc;
+    unsigned smSizeInByte = sizeof(ShadowMemory) * smSize;
+    cudaErrorCheck(cudaMalloc(&dsa, smSizeInByte));
+    cudaErrorCheck(cudaMalloc(&dsb, smSizeInByte));
+    cudaErrorCheck(cudaMalloc(&dsc, smSizeInByte));
+    cudaErrorCheck(cudaMemcpy(dsa, sa, smSizeInByte, cudaMemcpyHostToDevice));
+    cudaErrorCheck(cudaMemcpy(dsb, sb, smSizeInByte, cudaMemcpyHostToDevice));
+    cudaErrorCheck(cudaMemcpy(dsc, sc, smSizeInByte, cudaMemcpyHostToDevice));
 #endif
 
 #ifdef EXECUTION_TIME
     auto start_time = std::chrono::high_resolution_clock::now();
 #endif
 
-    scalar = 3.0;
     for (k = 0; k < NTIMES; k++) {
         times[0][k] = mysecond();
-
-#ifdef TUNED
-        tuned_STREAM_Copy();
-#else
-
-#ifdef PARALLEL
-#ifdef OFFLOADING
-#pragma omp target device(DEVICE_ID)
-#pragma omp teams distribute parallel for num_teams(TEAM_NUM) \
-    thread_limit(THREAD_LIMIT) schedule(static, 1)
-#else
-#pragma omp parallel for
-#endif
-#endif
-        for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
-            c[j] = a[j];
- //if (omp_get_team_num() == 0 && j == 0) {
- //printf("Is on the initial device = %d\n", omp_is_initial_device());
- //printf("team num = %d, thread_limit = %d\n", omp_get_num_teams(),
- //omp_get_thread_limit());
-//}
 #ifdef SHADOW_MEMORY
-            insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
-                     sizeof(STREAM_TYPE));
-            insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), true,
-                     sizeof(STREAM_TYPE));
+        stream_copy<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, dsc, dsa, STREAM_ARRAY_SIZE);
+#else
+        stream_copy<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, STREAM_ARRAY_SIZE);
 #endif
-        }
-
-#endif
-
+        cudaErrorCheck(cudaGetLastError());
+        cudaErrorCheck(cudaDeviceSynchronize());
         times[0][k] = mysecond() - times[0][k];
 
         times[1][k] = mysecond();
-
-#ifdef TUNED
-        tuned_STREAM_Scale(scalar);
-#else
-
-#ifdef PARALLEL
-#ifdef OFFLOADING
-#pragma omp target device(DEVICE_ID)
-#pragma omp teams distribute parallel for num_teams(TEAM_NUM) \
-    thread_limit(THREAD_LIMIT) schedule(static, 1)
-#else
-#pragma omp parallel for
-#endif
-#endif
-        for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
-            b[j] = scalar * c[j];
-
 #ifdef SHADOW_MEMORY
-            insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), true,
-                     sizeof(STREAM_TYPE));
-            insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
-                     sizeof(STREAM_TYPE));
+        stream_scale<<<TEAM_NUM, THREAD_LIMIT>>>(db, dc, dsb, dsc, scalar, STREAM_ARRAY_SIZE);
+#else
+        stream_scale<<<TEAM_NUM, THREAD_LIMIT>>>(db, dc, scalar, STREAM_ARRAY_SIZE);
 #endif
-        }
-#endif
-
+        cudaErrorCheck(cudaGetLastError());
+        cudaErrorCheck(cudaDeviceSynchronize());
         times[1][k] = mysecond() - times[1][k];
 
         times[2][k] = mysecond();
-
-#ifdef TUNED
-        tuned_STREAM_Add();
-#else
-
-#ifdef PARALLEL
-#ifdef OFFLOADING
-#pragma omp target device(DEVICE_ID)
-#pragma omp teams distribute parallel for num_teams(TEAM_NUM) \
-    thread_limit(THREAD_LIMIT) schedule(static, 1)
-#else
-#pragma omp parallel for
-#endif
-#endif
-        for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
-            c[j] = a[j] + b[j];
-
 #ifdef SHADOW_MEMORY
-            insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
-                     sizeof(STREAM_TYPE));
-            insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
-                     sizeof(STREAM_TYPE));
-            insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), true,
-                     sizeof(STREAM_TYPE));
+        stream_add<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, db, dsc, dsa, dsb, STREAM_ARRAY_SIZE);
+#else
+        stream_add<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, db, STREAM_ARRAY_SIZE);
 #endif
-        }
-#endif
-
+        cudaErrorCheck(cudaGetLastError());
+        cudaErrorCheck(cudaDeviceSynchronize());
         times[2][k] = mysecond() - times[2][k];
 
         times[3][k] = mysecond();
-
-#ifdef TUNED
-        tuned_STREAM_Triad(scalar);
-#else
-
-#ifdef PARALLEL
-#ifdef OFFLOADING
-#pragma omp target device(DEVICE_ID)
-#pragma omp teams distribute parallel for num_teams(TEAM_NUM) \
-    thread_limit(THREAD_LIMIT) schedule(static, 1)
-#else
-#pragma omp parallel for
-#endif
-#endif
-        for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
-            a[j] = b[j] + scalar * c[j];
-
 #ifdef SHADOW_MEMORY
-            insertSM(sa, j * sizeof(STREAM_TYPE), omp_get_team_num(), true,
-                     sizeof(STREAM_TYPE));
-            insertSM(sb, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
-                     sizeof(STREAM_TYPE));
-            insertSM(sc, j * sizeof(STREAM_TYPE), omp_get_team_num(), false,
-                     sizeof(STREAM_TYPE));
+        stream_triad<<<TEAM_NUM, THREAD_LIMIT>>>(da, db, dc, dsa, dsb, dsc, scalar, STREAM_ARRAY_SIZE);
+#else
+        stream_triad<<<TEAM_NUM, THREAD_LIMIT>>>(da, db, dc, scalar, STREAM_ARRAY_SIZE);
 #endif
-        }
-#endif
-
+        cudaErrorCheck(cudaGetLastError());
+        cudaErrorCheck(cudaDeviceSynchronize());
         times[3][k] = mysecond() - times[3][k];
     }
 
@@ -632,19 +643,13 @@ int main() {
     printf("overall execution time = %f seconds\n", elapsed_time.count());
 #endif
 
-#ifdef OFFLOADING
+cudaErrorCheck(cudaMemcpy(a, da, size_in_byte, cudaMemcpyDeviceToHost));
+cudaErrorCheck(cudaMemcpy(b, db, size_in_byte, cudaMemcpyDeviceToHost));
+cudaErrorCheck(cudaMemcpy(c, dc, size_in_byte, cudaMemcpyDeviceToHost));
 #ifdef SHADOW_MEMORY
-#pragma omp target exit data device(DEVICE_ID)                                     \
-    map(from : a[0 : STREAM_ARRAY_SIZE], b[0 : STREAM_ARRAY_SIZE],         \
-                                           c[0 : STREAM_ARRAY_SIZE],       \
-                                             sa[0 : STREAM_ARRAY_SIZE],    \
-                                                sb[0 : STREAM_ARRAY_SIZE], \
-                                                   sc[0 : STREAM_ARRAY_SIZE])
-#else
-#pragma omp target exit data device(DEVICE_ID)                             \
-    map(from : a[0 : STREAM_ARRAY_SIZE], b[0 : STREAM_ARRAY_SIZE], \
-                                           c[0 : STREAM_ARRAY_SIZE])
-#endif
+cudaErrorCheck(cudaMemcpy(sa, dsa, smSizeInByte, cudaMemcpyDeviceToHost));
+cudaErrorCheck(cudaMemcpy(sb, dsb, smSizeInByte, cudaMemcpyDeviceToHost));
+cudaErrorCheck(cudaMemcpy(sc, dsc, smSizeInByte, cudaMemcpyDeviceToHost));
 #endif
 
     /*	--- SUMMARY --- */
@@ -672,8 +677,17 @@ int main() {
     checkSTREAMresults();
     printf(HLINE);
 
-#if defined(OFFLOADING) && defined(SHADOW_MEMORY)
+#ifdef SHADOW_MEMORY
     //checkShadowMemory();
+#endif
+
+    cudaErrorCheck(cudaFree(da));
+    cudaErrorCheck(cudaFree(db));
+    cudaErrorCheck(cudaFree(dc));
+#ifdef SHADOW_MEMORY
+    cudaErrorCheck(cudaFree(dsa));
+    cudaErrorCheck(cudaFree(dsb));
+    cudaErrorCheck(cudaFree(dsc));
 #endif
     return 0;
 }
@@ -866,7 +880,7 @@ void checkSTREAMresults() {
 #endif
 }
 
-#if defined(OFFLOADING) && defined(SHADOW_MEMORY)
+#ifdef SHADOW_MEMORY
 void checkShadowMemory() {
     printf(HLINE);
     unsigned limit = 5;
@@ -885,32 +899,4 @@ void checkShadowMemory() {
     }
     printf(HLINE);
 }
-#endif
-
-#ifdef TUNED
-/* stubs for "tuned" versions of the kernels */
-void tuned_STREAM_Copy() {
-    ssize_t j;
-#pragma omp parallel for
-    for (j = 0; j < STREAM_ARRAY_SIZE; j++) c[j] = a[j];
-}
-
-void tuned_STREAM_Scale(STREAM_TYPE scalar) {
-    ssize_t j;
-#pragma omp parallel for
-    for (j = 0; j < STREAM_ARRAY_SIZE; j++) b[j] = scalar * c[j];
-}
-
-void tuned_STREAM_Add() {
-    ssize_t j;
-#pragma omp parallel for
-    for (j = 0; j < STREAM_ARRAY_SIZE; j++) c[j] = a[j] + b[j];
-}
-
-void tuned_STREAM_Triad(STREAM_TYPE scalar) {
-    ssize_t j;
-#pragma omp parallel for
-    for (j = 0; j < STREAM_ARRAY_SIZE; j++) a[j] = b[j] + scalar * c[j];
-}
-/* end of stubs for the "tuned" versions of the kernels */
 #endif
