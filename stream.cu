@@ -201,14 +201,15 @@
 #define DEVICE_ID 0
 #endif
 
-#define cudaErrorCheck(call)                                                              \
-do{                                                                                       \
-    cudaError_t cuErr = call;                                                             \
-    if(cudaSuccess != cuErr){                                                             \
-      printf("CUDA Error - %s:%d: '%s'\n", __FILE__, __LINE__, cudaGetErrorString(cuErr));\
-      exit(0);                                                                            \
-    }                                                                                     \
-}while(0)
+#define cudaErrorCheck(call)                                         \
+    do {                                                             \
+        cudaError_t cuErr = call;                                    \
+        if (cudaSuccess != cuErr) {                                  \
+            printf("CUDA Error - %s:%d: '%s'\n", __FILE__, __LINE__, \
+                   cudaGetErrorString(cuErr));                       \
+            exit(0);                                                 \
+        }                                                            \
+    } while (0)
 
 // static long thread_limit_in_team = ((long)STREAM_ARRAY_SIZE / (long)TEAM_NUM)
 // > 1024l ? 1024l : ((long)STREAM_ARRAY_SIZE / (long)TEAM_NUM);
@@ -219,7 +220,7 @@ static STREAM_TYPE a[STREAM_ARRAY_SIZE + OFFSET], b[STREAM_ARRAY_SIZE + OFFSET],
 static double avgtime[4] = {0}, maxtime[4] = {0},
               mintime[4] = {FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX};
 
-static char *label[4] = {"Copy:      ", "Scale:     ", "Add:       ",
+static char* label[4] = {"Copy:      ", "Scale:     ", "Add:       ",
                          "Triad:     "};
 
 static double bytes[4] = {2 * sizeof(STREAM_TYPE) * STREAM_ARRAY_SIZE,
@@ -236,23 +237,22 @@ extern void checkSTREAMresults();
 class ShadowMemory {
    private:
     static unsigned int offsetPatterns[4];
-    unsigned long bits[WINDOW_SIZE];
-    unsigned nextAvail;
+    unsigned long long int bits[WINDOW_SIZE];
 
    public:
-    ShadowMemory() : nextAvail(0) {
+    ShadowMemory() {
         for (unsigned i = 0; i < WINDOW_SIZE; i++) {
             bits[i] = EMPTY;
         }
     }
-    friend __device__ void insertSM(ShadowMemory *const s, ptrdiff_t address,
-                         unsigned int threadID, bool isWrite,
-                         unsigned int size);
+    friend __device__ __noinline__ void insertSM(ShadowMemory* const s, ptrdiff_t address,
+                                    unsigned int threadID, bool isWrite,
+                                    unsigned int size);
     unsigned int getThreadID(unsigned index) {
         return (unsigned int)(this->bits[index] >> 48);
     }
 
-    unsigned long getClock(unsigned index) {
+    unsigned long long int getClock(unsigned index) {
         return (this->bits[index] >> 6) & 0x000003FFFFFFFFFF;
     }
 
@@ -277,7 +277,7 @@ class ShadowMemory {
         printf(HLINE);
         for (unsigned i = 0; i < WINDOW_SIZE; i++) {
             printf(
-                "Thread ID = %d, Clock = %ld, Access mode = %s, Access size = "
+                "Thread ID = %d, Clock = %lld, Access mode = %s, Access size = "
                 "%d, Offset = %d\n",
                 getThreadID(i), getClock(i), isWrite(i) ? "write" : "read",
                 getAccessSize(i), getAddressOffset(i));
@@ -290,14 +290,15 @@ unsigned int ShadowMemory::offsetPatterns[] = {1, 2, 4, 8};
 
 unsigned int smSize =
     ((unsigned int)STREAM_ARRAY_SIZE * sizeof(STREAM_TYPE) + 7) / 8;
-ShadowMemory *sa = new ShadowMemory[smSize];
-ShadowMemory *sb = new ShadowMemory[smSize];
-ShadowMemory *sc = new ShadowMemory[smSize];
+ShadowMemory* sa = new ShadowMemory[smSize];
+ShadowMemory* sb = new ShadowMemory[smSize];
+ShadowMemory* sc = new ShadowMemory[smSize];
 
 // omp_lock_t lock_sa, lock_sb, lock_sc;
 
-__device__ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
-              bool isWrite, unsigned int size) {
+__device__ __noinline__ void insertSM(ShadowMemory* const s, ptrdiff_t address,
+                         unsigned int threadID, bool isWrite,
+                         unsigned int size) {
     unsigned int index = address / 8;
     unsigned int offset = address % 8;
     unsigned int clock = 0xC0DA;
@@ -307,7 +308,7 @@ __device__ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int 
         size >>= 1;
     }
 
-    unsigned long bit = 0x0000000000000000;
+    unsigned long long int bit = 0x0000000000000000;
     bit |= (threadID & 0x000000000000FFFF);
     bit <<= 42;
     bit |= (clock & 0x000003FFFFFFFFFF);
@@ -317,28 +318,42 @@ __device__ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int 
     bit |= encodedSize;
     bit <<= 3;
     bit |= (offset & 0x0000000000000007);
-    //unsigned int nextAvail;
+// unsigned int nextAvail;
 //
-    //nextAvail = s[index].nextAvail;
-    //s[index].bits[nextAvail] = bit;
-    //nextAvail = (nextAvail + 1) % WINDOW_SIZE;
-    //s[index].nextAvail = nextAvail;
-    
+// nextAvail = s[index].nextAvail;
+// s[index].bits[nextAvail] = bit;
+// nextAvail = (nextAvail + 1) % WINDOW_SIZE;
+// s[index].nextAvail = nextAvail;
+#ifdef USE_CAS
     unsigned nextIndex = WINDOW_SIZE;
     for (unsigned i = 0; i < WINDOW_SIZE; i++) {
-       unsigned long temp;
-       //#pragma omp atomic read
-       temp = s[index].bits[i];
+        unsigned long long int temp;
+        temp = s[index].bits[i];
 
-       if (temp == EMPTY && nextIndex == WINDOW_SIZE) {
+        if (temp == EMPTY && nextIndex == WINDOW_SIZE) {
             nextIndex = i;
-       }
+        }
     }
-    if(nextIndex == WINDOW_SIZE) {
-        nextIndex = address % WINDOW_SIZE;
+    if (nextIndex == WINDOW_SIZE) {
+        nextIndex = (address >> 3) % WINDOW_SIZE;
     }
-    //#pragma omp atomic write
+    atomicExch(&s[index].bits[nextIndex], bit);
+#else
+    unsigned nextIndex = WINDOW_SIZE;
+    for (unsigned i = 0; i < WINDOW_SIZE; i++) {
+        unsigned long long int temp;
+        temp = s[index].bits[i];
+
+        if (temp == EMPTY && nextIndex == WINDOW_SIZE) {
+            nextIndex = i;
+        }
+    }
+    if (nextIndex == WINDOW_SIZE) {
+        nextIndex = (address >> 3) % WINDOW_SIZE;
+    }
     s[index].bits[nextIndex] = bit;
+    __threadfence();
+#endif
 }
 #endif
 
@@ -351,13 +366,15 @@ void checkShadowMemory();
 STREAM_TYPE scalar = 3.0;
 
 #ifdef SHADOW_MEMORY
-__global__ void stream_copy(STREAM_TYPE* dst, STREAM_TYPE* src, ShadowMemory* dstSM, ShadowMemory* srcSM, unsigned size) {
+__global__ void stream_copy(STREAM_TYPE* dst, STREAM_TYPE* src,
+                            ShadowMemory* dstSM, ShadowMemory* srcSM,
+                            unsigned size) {
 #else
 __global__ void stream_copy(STREAM_TYPE* dst, STREAM_TYPE* src, unsigned size) {
 #endif
     unsigned chunk = size / gridDim.x;
     unsigned remain = size % gridDim.x;
-    unsigned start = chunk * blockIdx.x; 
+    unsigned start = chunk * blockIdx.x;
     unsigned end = start + chunk;
     if (blockIdx.x < remain) {
         start += blockIdx.x;
@@ -368,26 +385,31 @@ __global__ void stream_copy(STREAM_TYPE* dst, STREAM_TYPE* src, unsigned size) {
         dst[index] = src[index];
 #ifdef SHADOW_MEMORY
         unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
-        insertSM(srcSM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
-        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true, sizeof(STREAM_TYPE));
+        insertSM(srcSM, index * sizeof(STREAM_TYPE), tid, false,
+                 sizeof(STREAM_TYPE));
+        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true,
+                 sizeof(STREAM_TYPE));
 #endif
         index += blockDim.x;
     }
-    //unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
-    //while(tid < size) {
-        //dst[tid] = src[tid];
-        //tid += gridDim.x * blockDim.x;
+    // unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+    // while(tid < size) {
+    // dst[tid] = src[tid];
+    // tid += gridDim.x * blockDim.x;
     //}
 }
 
 #ifdef SHADOW_MEMORY
-__global__ void stream_scale(STREAM_TYPE* dst, STREAM_TYPE* src, ShadowMemory* dstSM, ShadowMemory* srcSM, STREAM_TYPE scalar, unsigned size) {
+__global__ void stream_scale(STREAM_TYPE* dst, STREAM_TYPE* src,
+                             ShadowMemory* dstSM, ShadowMemory* srcSM,
+                             STREAM_TYPE scalar, unsigned size) {
 #else
-__global__ void stream_scale(STREAM_TYPE* dst, STREAM_TYPE* src, STREAM_TYPE scalar, unsigned size) {
+__global__ void stream_scale(STREAM_TYPE* dst, STREAM_TYPE* src,
+                             STREAM_TYPE scalar, unsigned size) {
 #endif
     unsigned chunk = size / gridDim.x;
     unsigned remain = size % gridDim.x;
-    unsigned start = chunk * blockIdx.x; 
+    unsigned start = chunk * blockIdx.x;
     unsigned end = start + chunk;
     if (blockIdx.x < remain) {
         start += blockIdx.x;
@@ -398,26 +420,31 @@ __global__ void stream_scale(STREAM_TYPE* dst, STREAM_TYPE* src, STREAM_TYPE sca
         dst[index] = scalar * src[index];
 #ifdef SHADOW_MEMORY
         unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
-        insertSM(srcSM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE)); 
-        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true, sizeof(STREAM_TYPE));
+        insertSM(srcSM, index * sizeof(STREAM_TYPE), tid, false,
+                 sizeof(STREAM_TYPE));
+        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true,
+                 sizeof(STREAM_TYPE));
 #endif
         index += blockDim.x;
     }
-    //unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
-    //while (tid < size) {
-        //dst[tid] = scalar * src[tid];
-        //tid += gridDim.x * blockDim.x;
+    // unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+    // while (tid < size) {
+    // dst[tid] = scalar * src[tid];
+    // tid += gridDim.x * blockDim.x;
     //}
 }
 
 #ifdef SHADOW_MEMORY
-__global__ void stream_add(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2, ShadowMemory* dstSM, ShadowMemory* op1SM, ShadowMemory* op2SM, unsigned size) {
+__global__ void stream_add(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2,
+                           ShadowMemory* dstSM, ShadowMemory* op1SM,
+                           ShadowMemory* op2SM, unsigned size) {
 #else
-__global__ void stream_add(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2, unsigned size) {
+__global__ void stream_add(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2,
+                           unsigned size) {
 #endif
     unsigned chunk = size / gridDim.x;
     unsigned remain = size % gridDim.x;
-    unsigned start = chunk * blockIdx.x; 
+    unsigned start = chunk * blockIdx.x;
     unsigned end = start + chunk;
     if (blockIdx.x < remain) {
         start += blockIdx.x;
@@ -428,27 +455,35 @@ __global__ void stream_add(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2,
         dst[index] = op1[index] + op2[index];
 #ifdef SHADOW_MEMORY
         unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
-        insertSM(op1SM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
-        insertSM(op2SM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
-        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true, sizeof(STREAM_TYPE));
+        insertSM(op1SM, index * sizeof(STREAM_TYPE), tid, false,
+                 sizeof(STREAM_TYPE));
+        insertSM(op2SM, index * sizeof(STREAM_TYPE), tid, false,
+                 sizeof(STREAM_TYPE));
+        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true,
+                 sizeof(STREAM_TYPE));
 #endif
         index += blockDim.x;
     }
-    //unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
-    //while (tid < size) {
-        //dst[tid] = op1[tid] + op2[tid];
-        //tid += gridDim.x * blockDim.x;
+    // unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+    // while (tid < size) {
+    // dst[tid] = op1[tid] + op2[tid];
+    // tid += gridDim.x * blockDim.x;
     //}
 }
 
 #ifdef SHADOW_MEMORY
-__global__ void stream_triad(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2, ShadowMemory* dstSM, ShadowMemory* op1SM, ShadowMemory* op2SM, STREAM_TYPE scalar, unsigned size) {
+__global__ void stream_triad(STREAM_TYPE* dst, STREAM_TYPE* op1,
+                             STREAM_TYPE* op2, ShadowMemory* dstSM,
+                             ShadowMemory* op1SM, ShadowMemory* op2SM,
+                             STREAM_TYPE scalar, unsigned size) {
 #else
-__global__ void stream_triad(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op2, STREAM_TYPE scalar, unsigned size) {
+__global__ void stream_triad(STREAM_TYPE* dst, STREAM_TYPE* op1,
+                             STREAM_TYPE* op2, STREAM_TYPE scalar,
+                             unsigned size) {
 #endif
     unsigned chunk = size / gridDim.x;
     unsigned remain = size % gridDim.x;
-    unsigned start = chunk * blockIdx.x; 
+    unsigned start = chunk * blockIdx.x;
     unsigned end = start + chunk;
     if (blockIdx.x < remain) {
         start += blockIdx.x;
@@ -459,16 +494,19 @@ __global__ void stream_triad(STREAM_TYPE* dst, STREAM_TYPE* op1, STREAM_TYPE* op
         dst[index] = op1[index] + scalar * op2[index];
 #ifdef SHADOW_MEMORY
         unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
-        insertSM(op1SM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
-        insertSM(op2SM, index * sizeof(STREAM_TYPE), tid, false, sizeof(STREAM_TYPE));
-        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true, sizeof(STREAM_TYPE));
+        insertSM(op1SM, index * sizeof(STREAM_TYPE), tid, false,
+                 sizeof(STREAM_TYPE));
+        insertSM(op2SM, index * sizeof(STREAM_TYPE), tid, false,
+                 sizeof(STREAM_TYPE));
+        insertSM(dstSM, index * sizeof(STREAM_TYPE), tid, true,
+                 sizeof(STREAM_TYPE));
 #endif
         index += blockDim.x;
     }
-    //unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
-    //while (tid < size) {
-        //dst[tid] = op1[tid] + scalar * op2[tid];
-        //tid += gridDim.x * blockDim.x;
+    // unsigned tid = blockDim.x * blockIdx.x + threadIdx.x;
+    // while (tid < size) {
+    // dst[tid] = op1[tid] + scalar * op2[tid];
+    // tid += gridDim.x * blockDim.x;
     //}
 }
 
@@ -479,12 +517,12 @@ int main() {
     ssize_t j;
     double t, times[4][NTIMES];
 
-    if (sizeof(STREAM_TYPE) < 8) {
-        printf(
-            "Due to the limitation on GPU, we currently only support 64 bit "
-            "STREAM_TYPE");
-        exit(1);
-    }
+    // if (sizeof(STREAM_TYPE) < 8) {
+    // printf(
+    //"Due to the limitation on GPU, we currently only support 64 bit "
+    //"STREAM_TYPE");
+    // exit(1);
+    //}
 
     /* --- SETUP --- determine precision and check timing --- */
 
@@ -527,12 +565,13 @@ int main() {
     cudaErrorCheck(cudaGetDeviceCount(&device_num));
     printf("Number of Device = %d\n", device_num);
     if (DEVICE_ID >= device_num) {
-        printf("Invalid device index, vaild index range is 0 - %d.\n", device_num - 1);
+        printf("Invalid device index, vaild index range is 0 - %d.\n",
+               device_num - 1);
         exit(-1);
     }
     cudaErrorCheck(cudaSetDevice(DEVICE_ID));
 
-/* Get initial value for system clock. */
+    /* Get initial value for system clock. */
     for (j = 0; j < STREAM_ARRAY_SIZE; j++) {
         a[j] = 1.0;
         b[j] = 2.0;
@@ -570,8 +609,8 @@ int main() {
     printf("precision of your system timer.\n");
     printf(HLINE);
 
-/*	--- MAIN LOOP --- repeat test cases NTIMES times --- */
-    
+    /*	--- MAIN LOOP --- repeat test cases NTIMES times --- */
+
     STREAM_TYPE *da, *db, *dc;
     unsigned size_in_byte = sizeof(STREAM_TYPE) * STREAM_ARRAY_SIZE;
     cudaErrorCheck(cudaMalloc(&da, size_in_byte));
@@ -598,7 +637,8 @@ int main() {
     for (k = 0; k < NTIMES; k++) {
         times[0][k] = mysecond();
 #ifdef SHADOW_MEMORY
-        stream_copy<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, dsc, dsa, STREAM_ARRAY_SIZE);
+        stream_copy<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, dsc, dsa,
+                                                STREAM_ARRAY_SIZE);
 #else
         stream_copy<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, STREAM_ARRAY_SIZE);
 #endif
@@ -608,9 +648,11 @@ int main() {
 
         times[1][k] = mysecond();
 #ifdef SHADOW_MEMORY
-        stream_scale<<<TEAM_NUM, THREAD_LIMIT>>>(db, dc, dsb, dsc, scalar, STREAM_ARRAY_SIZE);
+        stream_scale<<<TEAM_NUM, THREAD_LIMIT>>>(db, dc, dsb, dsc, scalar,
+                                                 STREAM_ARRAY_SIZE);
 #else
-        stream_scale<<<TEAM_NUM, THREAD_LIMIT>>>(db, dc, scalar, STREAM_ARRAY_SIZE);
+        stream_scale<<<TEAM_NUM, THREAD_LIMIT>>>(db, dc, scalar,
+                                                 STREAM_ARRAY_SIZE);
 #endif
         cudaErrorCheck(cudaGetLastError());
         cudaErrorCheck(cudaDeviceSynchronize());
@@ -618,7 +660,8 @@ int main() {
 
         times[2][k] = mysecond();
 #ifdef SHADOW_MEMORY
-        stream_add<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, db, dsc, dsa, dsb, STREAM_ARRAY_SIZE);
+        stream_add<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, db, dsc, dsa, dsb,
+                                               STREAM_ARRAY_SIZE);
 #else
         stream_add<<<TEAM_NUM, THREAD_LIMIT>>>(dc, da, db, STREAM_ARRAY_SIZE);
 #endif
@@ -628,9 +671,11 @@ int main() {
 
         times[3][k] = mysecond();
 #ifdef SHADOW_MEMORY
-        stream_triad<<<TEAM_NUM, THREAD_LIMIT>>>(da, db, dc, dsa, dsb, dsc, scalar, STREAM_ARRAY_SIZE);
+        stream_triad<<<TEAM_NUM, THREAD_LIMIT>>>(da, db, dc, dsa, dsb, dsc,
+                                                 scalar, STREAM_ARRAY_SIZE);
 #else
-        stream_triad<<<TEAM_NUM, THREAD_LIMIT>>>(da, db, dc, scalar, STREAM_ARRAY_SIZE);
+        stream_triad<<<TEAM_NUM, THREAD_LIMIT>>>(da, db, dc, scalar,
+                                                 STREAM_ARRAY_SIZE);
 #endif
         cudaErrorCheck(cudaGetLastError());
         cudaErrorCheck(cudaDeviceSynchronize());
@@ -643,13 +688,13 @@ int main() {
     printf("overall execution time = %f seconds\n", elapsed_time.count());
 #endif
 
-cudaErrorCheck(cudaMemcpy(a, da, size_in_byte, cudaMemcpyDeviceToHost));
-cudaErrorCheck(cudaMemcpy(b, db, size_in_byte, cudaMemcpyDeviceToHost));
-cudaErrorCheck(cudaMemcpy(c, dc, size_in_byte, cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaMemcpy(a, da, size_in_byte, cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaMemcpy(b, db, size_in_byte, cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaMemcpy(c, dc, size_in_byte, cudaMemcpyDeviceToHost));
 #ifdef SHADOW_MEMORY
-cudaErrorCheck(cudaMemcpy(sa, dsa, smSizeInByte, cudaMemcpyDeviceToHost));
-cudaErrorCheck(cudaMemcpy(sb, dsb, smSizeInByte, cudaMemcpyDeviceToHost));
-cudaErrorCheck(cudaMemcpy(sc, dsc, smSizeInByte, cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaMemcpy(sa, dsa, smSizeInByte, cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaMemcpy(sb, dsb, smSizeInByte, cudaMemcpyDeviceToHost));
+    cudaErrorCheck(cudaMemcpy(sc, dsc, smSizeInByte, cudaMemcpyDeviceToHost));
 #endif
 
     /*	--- SUMMARY --- */
@@ -678,7 +723,7 @@ cudaErrorCheck(cudaMemcpy(sc, dsc, smSizeInByte, cudaMemcpyDeviceToHost));
     printf(HLINE);
 
 #ifdef SHADOW_MEMORY
-    //checkShadowMemory();
+    checkShadowMemory();
 #endif
 
     cudaErrorCheck(cudaFree(da));
@@ -884,17 +929,17 @@ void checkSTREAMresults() {
 void checkShadowMemory() {
     printf(HLINE);
     unsigned limit = 5;
-    unsigned stripe = STREAM_ARRAY_SIZE / limit;
+    unsigned stripe = smSize / limit;
     printf("sa:\n");
-    for (unsigned i = 0; i < STREAM_ARRAY_SIZE; i += stripe) {
+    for (unsigned i = 0; i < smSize; i += stripe) {
         sa[i].outputSM();
     }
     printf("sb:\n");
-    for (unsigned i = 0; i < STREAM_ARRAY_SIZE; i += stripe) {
+    for (unsigned i = 0; i < smSize; i += stripe) {
         sb[i].outputSM();
     }
     printf("sc:\n");
-    for (unsigned i = 0; i < STREAM_ARRAY_SIZE; i += stripe) {
+    for (unsigned i = 0; i < smSize; i += stripe) {
         sc[i].outputSM();
     }
     printf(HLINE);

@@ -239,11 +239,10 @@ extern int omp_get_team_num();
 class ShadowMemory {
    private:
     static unsigned int offsetPatterns[4];
-    unsigned long bits[WINDOW_SIZE];
-    unsigned nextAvail;
+    unsigned long long int bits[WINDOW_SIZE];
 
    public:
-    ShadowMemory() : nextAvail(0) {
+    ShadowMemory() {
         for (unsigned i = 0; i < WINDOW_SIZE; i++) {
             bits[i] = EMPTY;
         }
@@ -255,7 +254,7 @@ class ShadowMemory {
         return (unsigned int)(this->bits[index] >> 48);
     }
 
-    unsigned long getClock(unsigned index) {
+    unsigned long long int getClock(unsigned index) {
         return (this->bits[index] >> 6) & 0x000003FFFFFFFFFF;
     }
 
@@ -280,7 +279,7 @@ class ShadowMemory {
         printf(HLINE);
         for (unsigned i = 0; i < WINDOW_SIZE; i++) {
             printf(
-                "Thread ID = %d, Clock = %ld, Access mode = %s, Access size = "
+                "Thread ID = %d, Clock = %lld, Access mode = %s, Access size = "
                 "%d, Offset = %d\n",
                 getThreadID(i), getClock(i), isWrite(i) ? "write" : "read",
                 getAccessSize(i), getAddressOffset(i));
@@ -329,7 +328,7 @@ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
     
     unsigned nextIndex = WINDOW_SIZE;
     for (unsigned i = 0; i < WINDOW_SIZE; i++) {
-       unsigned long temp;
+       unsigned long long int temp;
        //#pragma omp atomic read
        temp = s[index].bits[i];
 
@@ -338,7 +337,7 @@ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
        }
     }
     if(nextIndex == WINDOW_SIZE) {
-        nextIndex = address % WINDOW_SIZE;
+        nextIndex = (address >> 3) % WINDOW_SIZE;
     }
     //#pragma omp atomic write
     s[index].bits[nextIndex] = bit;
@@ -870,17 +869,17 @@ void checkSTREAMresults() {
 void checkShadowMemory() {
     printf(HLINE);
     unsigned limit = 5;
-    unsigned stripe = STREAM_ARRAY_SIZE / limit;
+    unsigned stripe = smSize / limit;
     printf("sa:\n");
-    for (unsigned i = 0; i < STREAM_ARRAY_SIZE; i += stripe) {
+    for (unsigned i = 0; i < smSize; i += stripe) {
         sa[i].outputSM();
     }
     printf("sb:\n");
-    for (unsigned i = 0; i < STREAM_ARRAY_SIZE; i += stripe) {
+    for (unsigned i = 0; i < smSize; i += stripe) {
         sb[i].outputSM();
     }
     printf("sc:\n");
-    for (unsigned i = 0; i < STREAM_ARRAY_SIZE; i += stripe) {
+    for (unsigned i = 0; i < smSize; i += stripe) {
         sc[i].outputSM();
     }
     printf(HLINE);
