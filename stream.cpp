@@ -329,7 +329,7 @@ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
     unsigned nextIndex = WINDOW_SIZE;
     for (unsigned i = 0; i < WINDOW_SIZE; i++) {
        unsigned long long int temp;
-       //#pragma omp atomic read
+       #pragma omp atomic read
        temp = s[index].bits[i];
 
        if (temp == EMPTY && nextIndex == WINDOW_SIZE) {
@@ -339,7 +339,7 @@ void insertSM(ShadowMemory *const s, ptrdiff_t address, unsigned int threadID,
     if(nextIndex == WINDOW_SIZE) {
         nextIndex = (address >> 3) % WINDOW_SIZE;
     }
-    //#pragma omp atomic write
+    #pragma omp atomic write
     s[index].bits[nextIndex] = bit;
 }
 #endif

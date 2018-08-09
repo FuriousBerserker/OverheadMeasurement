@@ -14,10 +14,13 @@ do
         echo "Thread block num = ${block_num}"
         echo "thread_block ${block_num}" >> ${output_file}
         echo "original:"
-        MACRO_FOR_CONFLICT="-DBLOCK_NUM=${block_num}" make -B conflict_cu.exe >/dev/null 2>&1
+        MACRO_FOR_CONFLICT="-DBLOCK_NUM=${block_num}" make -B -f Conflict.make conflict_cu.exe >/dev/null 2>&1
         ./conflict_cu.exe | grep "Min:" | awk '{print "original " $6}' | tee -a ${output_file}
-        echo "shadow memory:"
-        MACRO_FOR_CONFLICT="-DBLOCK_NUM=${block_num} -DSHADOW_MEMORY=1" make -B conflict_cu.exe >/dev/null 2>&1
-        ./conflict_cu.exe | grep "Min:" | awk '{print "shadow_memory " $6}' | tee -a ${output_file}
+        echo "shadow memory-atomic:"
+        MACRO_FOR_CONFLICT="-DBLOCK_NUM=${block_num} -DSHADOW_MEMORY=1 -DUSE_CAS=1" make -B -f Conflict.make conflict_cu.exe >/dev/null 2>&1
+        ./conflict_cu.exe | grep "Min:" | awk '{print "shadow_memory-atomic " $6}' | tee -a ${output_file}
+        echo "shadow memory-volatile"
+        MACRO_FOR_CONFLICT="-DBLOCK_NUM=${block_num} -DSHADOW_MEMORY=1" make -B -f Conflict.make conflict_cu.exe >/dev/null 2>&1
+        ./conflict_cu.exe | grep "Min:" | awk '{print "shadow_memory-volatile " $6}' | tee -a ${output_file}
 done
 ./conflict_graph.py ${output_file}

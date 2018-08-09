@@ -126,8 +126,7 @@ __device__ __noinline__ void insertSM(ptrdiff_t address,
     unsigned nextIndex = WINDOW_SIZE;
     for (unsigned i = 0; i < WINDOW_SIZE; i++) {
         unsigned long long int temp;
-        temp = sm[index].bits[i];
-
+        temp = *(volatile unsigned long long int*)(&sm[index].bits[i]);
         if (temp == ShadowMemory::EMPTY && nextIndex == WINDOW_SIZE) {
             nextIndex = i;
         }
@@ -135,7 +134,11 @@ __device__ __noinline__ void insertSM(ptrdiff_t address,
     if (nextIndex == WINDOW_SIZE) {
         nextIndex = (address >> 3) % WINDOW_SIZE;
     }
+#ifdef USE_CAS
     atomicExch(&sm[index].bits[nextIndex], bit);
+#else
+    *(volatile unsigned long long int*)(&sm[index].bits[nextIndex]) = bit;
+#endif
 }
 
 void printShadowMemory(ShadowMemory* sm, unsigned size, unsigned limit = 10, unsigned stride = 1) {
@@ -229,7 +232,7 @@ int main() {
     cudaFree(array2OnDevice);
 #ifdef SHADOW_MEMORY
     cudaErrorCheck(cudaMemcpy(smOnHost, smOnDevice, sizeof(ShadowMemory) * smSize, cudaMemcpyDeviceToHost));
-    //printShadowMemory(smOnHost, smSize);
+    printShadowMemory(smOnHost, smSize);
     cudaFree(smOnDevice);
 #endif
 

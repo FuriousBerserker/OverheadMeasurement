@@ -12,7 +12,7 @@ FF = g77
 FFLAGS = -O0
 
 .PHONY: default
-default: stream_cpp.exe stream_cu.exe conflict_cu.exe
+default: stream_cpp.exe stream_cu.exe
 
 all: stream_f.exe stream_c.exe
 
@@ -33,11 +33,8 @@ stream_cu.exe: stream.cu
 stream_cu2.exe: main.cpp CUDAStream.cu
 	$(CUDA_CXX) $(CUDA_CXX_FLAGS) ${CUDA_CXX_MACROS} $? -o $@
 
-conflict_cu.exe: conflict.cu
-	$(CUDA_CXX) $(CUDA_CXX_FLAGS) $(MACRO_FOR_CONFLICT) $? -o $@
-
 clean:
-	rm -f stream_f.exe stream_c.exe stream_cpp.exe stream_cu.exe stream_cu2.exe conflict_cu.exe *.o
+	rm -f stream_f.exe stream_c.exe stream_cpp.exe stream_cu.exe stream_cu2.exe *.o
 
 # an example of a more complex build line for the Intel icc compiler
 stream.icc: stream.c

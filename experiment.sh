@@ -40,7 +40,7 @@ MACROS=${macro_shadow_memory} make >/dev/null 2>&1
 #./stream_cpp.exe | grep "overall execution time"
 echo 'OpenMP:'
 ./stream_cpp.exe | grep -A4 "Copy:"
-echo 'CUDA-threadfence:'
+echo 'CUDA-volatile:'
 ./stream_cu.exe | grep -A4 "Copy:"
 make clean >/dev/null 2>&1
 MACROS=${macro_cas_shadow_memory} make >/dev/null 2>&1

@@ -351,8 +351,7 @@ __device__ __noinline__ void insertSM(ShadowMemory* const s, ptrdiff_t address,
     if (nextIndex == WINDOW_SIZE) {
         nextIndex = (address >> 3) % WINDOW_SIZE;
     }
-    s[index].bits[nextIndex] = bit;
-    __threadfence();
+    *(volatile long long int*)(&s[index].bits[nextIndex])=bit;
 #endif
 }
 #endif
