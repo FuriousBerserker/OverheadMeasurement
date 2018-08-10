@@ -478,12 +478,42 @@ __global__ void testLDSTRelaxed(unsigned long long int *array, unsigned size, un
 }
 
 
-int main() {
+int main(int argc, char *argv[]) {
+    // Output Device Info
+    int num_devices;
+    int device_num;
+    int device_major;
+    cudaGetDeviceCount(&num_devices);
+    if (argc < 2) {
+        for (unsigned i = 0; i < num_devices; i++) {
+            cudaDeviceProp prop;
+            cudaGetDeviceProperties(&prop, i);
+            std::cout << "Device Number: " << i << std::endl;
+            std::cout << "    Device Name: " << prop.name << std::endl;
+            std::cout << "    Compute Capacity: " << prop.major << "." << prop.minor << std::endl; 
+        }
+        exit(0);
+    } else {
+        device_num = std::stoi(argv[1], nullptr, 10);
+        if (device_num >= num_devices) {
+            std::cout << "Only " << num_devices << " devices is available on this machine" << std::endl;
+            exit(1);
+        } else {
+            cudaDeviceProp prop;
+            cudaGetDeviceProperties(&prop, device_num);
+            std::cout << "Device Number: " << device_num << std::endl;
+            std::cout << "    Device Name: " << prop.name << std::endl;
+            std::cout << "    Compute Capacity: " << prop.major << "." << prop.minor << std::endl; 
+            device_major = prop.major;
+            cudaSetDevice(device_num);
+        }
+    }
+
     std::vector<std::string> names = {"ld.volatile", "st.volatile", "atomicExch", "ldst.volatile", "ldatomic"};
-#if __CUDA_ARCH__ >= 700
-    names.push_back("st.relaxed");
-    names.push_back("ldst.relaxed");
-#endif
+    if (device_major >= 7) {
+        names.push_back("st.relaxed");
+        names.push_back("ldst.relaxed");
+    }
     double** execution_times = new double*[names.size()]();
     for (unsigned i = 0; i < names.size(); i++) {
         execution_times[i] = new double[NTIMES + 1]();
@@ -540,23 +570,24 @@ int main() {
         auto end_ldatomic = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> elapsed_time_ldatomic = end_ldatomic - start_ldatomic;
         execution_times[4][i] = elapsed_time_ldatomic.count();
-#if __CUDA_ARCH__ >= 700
-        auto start_st_relaxed = std::chrono::high_resolution_clock::now();
-        testSTRelaxed<<<BLOCK_NUM, BLOCK_SIZE>>>(array1_device, ARRAY_SIZE);
-        cudaErrorCheck(cudaGetLastError());
-        cudaErrorCheck(cudaDeviceSynchronize());
-        auto end_st_relaxed = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> elapsed_time_st_relaxed = end_st_relaxed - start_st_relaxed;
-        execution_times[5][i] = elapsed_time_st_relaxed.count();
 
-        auto start_ldst_relaxed = std::chrono::high_resolution_clock::now();
-        testLDSTRelaxed<<<BLOCK_NUM, BLOCK_SIZE>>>(array1_device, ARRAY_SIZE, array2_device);
-        cudaErrorCheck(cudaGetLastError());
-        cudaErrorCheck(cudaDeviceSynchronize());
-        auto end_ldst_relaxed = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> elapsed_time_ldst_relaxed = end_ldst_relaxed - start_ldst_relaxed;
-        execution_times[6][i] = elapsed_time_ldst_relaxed.count();
-#endif
+        if (device_major >= 7) {
+            auto start_st_relaxed = std::chrono::high_resolution_clock::now();
+            testSTRelaxed<<<BLOCK_NUM, BLOCK_SIZE>>>(array1_device, ARRAY_SIZE);
+            cudaErrorCheck(cudaGetLastError());
+            cudaErrorCheck(cudaDeviceSynchronize());
+            auto end_st_relaxed = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_time_st_relaxed = end_st_relaxed - start_st_relaxed;
+            execution_times[5][i] = elapsed_time_st_relaxed.count();
+
+            auto start_ldst_relaxed = std::chrono::high_resolution_clock::now();
+            testLDSTRelaxed<<<BLOCK_NUM, BLOCK_SIZE>>>(array1_device, ARRAY_SIZE, array2_device);
+            cudaErrorCheck(cudaGetLastError());
+            cudaErrorCheck(cudaDeviceSynchronize());
+            auto end_ldst_relaxed = std::chrono::high_resolution_clock::now();
+            std::chrono::duration<double> elapsed_time_ldst_relaxed = end_ldst_relaxed - start_ldst_relaxed;
+            execution_times[6][i] = elapsed_time_ldst_relaxed.count();
+        }
     }
 
     cudaErrorCheck(cudaMemcpy(array1_host, array1_device, array1_size_in_byte, cudaMemcpyDeviceToHost));
